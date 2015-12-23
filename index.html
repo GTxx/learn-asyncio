@@ -2,7 +2,7 @@
 <meta charset="utf-8" />
 <html>
 <head>
-<script src="http://ajax.googleapis.com/ajax/libs/jquery/1.4.2/jquery.min.js">
+<script src="http://ajax.useso.com/ajax/libs/jquery/1.4.2/jquery.min.js">
 </script>
   <script language="javascript" type="text/javascript">
     $(function() {
@@ -14,7 +14,7 @@
       }
       function connect() {
         disconnect();
-        var wsUri = (window.location.protocol=='https:'&&'wss://'||'ws://')+window.location.host;
+        var wsUri = (window.location.protocol=='https:'&&'wss://'||'ws://')+window.location.host+'/channel/channel_1';
         conn = new WebSocket(wsUri);
         log('Connecting...');
         conn.onopen = function() {
