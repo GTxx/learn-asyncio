@@ -249,6 +249,18 @@ STATUS_IPV6 = 1
 
 count = 0
 
+
+class MyClass:
+
+    __slots__ = ['xx', ]
+
+    def __init__(self):
+        self.xx = 1
+
+a = MyClass()
+a.xx = 1
+
+
 class DNSProtocol(asyncio.DatagramProtocol):
 
     num = 1
@@ -257,18 +269,28 @@ class DNSProtocol(asyncio.DatagramProtocol):
     conn_lost = set()
     used_port = {}
 
+    def checkout_port_usage(self, used_port):
+        for port, dnsprotocals in used_port.items():
+            if len(dnsprotocals) > 1:
+                print("------- port reuse found begin ------------")
+                print(dnsprotocals)
+                print("-------- port reuse found end---------------------")
+
     def __init__(self, hostname, callback):
         self.hostname = hostname
         self.transport = None
         self.callback = callback
         self.num = DNSProtocol.num
         self.loop = asyncio.get_event_loop()
+        self.port = None
+        self.file_no = None
+        self.receive_data_num = 0
         DNSProtocol.num += 1
 
     def connection_made(self, transport):
         self.transport = transport
         self.port = transport._sock.getsockname()[1]
-        self.fileno = self.transport._sock.fileno()
+        self.file_no = self.transport._sock.fileno()
 
         req = build_request(self.hostname, QTYPE_A)
         self.transport.sendto(req)
@@ -277,9 +299,11 @@ class DNSProtocol(asyncio.DatagramProtocol):
             DNSProtocol.used_port[self.port].append(self)
         else:
             DNSProtocol.used_port[self.port] = [self, ]
-        print("connection made, {}".format(self))
-
+        # print("connection made, {}".format(self))
+        self.checkout_port_usage(used_port=self.used_port)
     def datagram_received(self, data, addr):
+        if len(data) != 90:
+            print("receive data length is not 90, {}".format(data))
         DNSProtocol.receiving.add(self)
         response = parse_response(data)
         port = self.transport._sock.getsockname()[1]
@@ -289,20 +313,21 @@ class DNSProtocol(asyncio.DatagramProtocol):
             try:
                 DNSProtocol.used_port[port].remove(self)
             except Exception:
+                print("remove dns protocal from used port fail, {}".format(self))
                 pass
-            print("{}, close port {}".format(self, self.transport._sock.getsockname()[1]))
+            # print("{}, close port {}".format(self, self.transport._sock.getsockname()[1]))
         elif len(DNSProtocol.used_port[port]) >= 1:
             for x in DNSProtocol.used_port[port]:
                 print("{} with sock fileno {}".format(x, x.transport._sock.fileno()))
             try:
                 DNSProtocol.used_port[port].remove(self)
             except Exception:
-                pass
+                print("remove dns protocal from used port fail, {}".format(self))
         else:
             print('error, no port used,...port: {}'.format(port))
         # don
         # self.timer.cancel()
-        print("receive data, {} close ".format(self))
+        # print("receive data, {} close ".format(self))
         self.transport.close()
         self.callback((response, self))
 
@@ -310,11 +335,11 @@ class DNSProtocol(asyncio.DatagramProtocol):
         print('Error received:', exc)
 
     def connection_lost(self, exc):
-        print("connection lost, {} close".format(self))
+        # print("connection lost, {} close".format(self))
         self.transport.close()
 
     def __repr__(self):
-        return "<DNSProtocal: {}, f: {}, p: {}>".format(self.num, self.fileno, self.port)
+        return "<DNSProtocal: {}, f: {}, p: {}>".format(self.num, self.file_no, self.port)
 
 
 loop = asyncio.get_event_loop()
@@ -327,16 +352,16 @@ async def get_hostinfo(hostname):
         if future.cancelled():
             return
         else:
-            print("set result for future, {}".format(result[1]))
+            # print("set result for future, {}".format(result[1]))
             future.set_result(result)
 
 
     dns_request = loop.create_datagram_endpoint(
         lambda: DNSProtocol(hostname, callback),
         remote_addr=('127.0.1.1', 53),
-        reuse_port=True
+        family=socket.AF_INET,
+        proto=socket.SOL_UDP
     )
-
     transport, protocal = await dns_request
     response, num = await future
     # if (response == "error"):
@@ -373,3 +398,26 @@ if __name__ == '__main__':
     loop.run_until_complete(asyncio.wait(tasks3))
     # loop.run_forever()
     print("last for {}".format(time.time() - begin))
+
+
+def get_hostinfo_low(domain_name):
+    # low level socket to get
+    # open udp connection
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM,
+                                   socket.SOL_UDP)
+    sock.setblocking(False)
+
+    # send request
+    req = build_request(domain_name, QTYPE_A)
+    sock.sendto(req, ('127.0.0.1', 53))
+
+
+    future = asyncio.Future()
+    def callback(sock):
+        if future.cancelled():
+            return
+        else:
+            # print("set result for future, {}".format(result[1]))
+            sock.send
+            future.set_result(result)
+    loop.add_reader(sock.fileno(), callback)
