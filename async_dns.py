@@ -244,132 +244,78 @@ class DNSResponse(object):
         return '%s: %s' % (self.hostname, str(self.answers))
 
 
-STATUS_IPV4 = 0
-STATUS_IPV6 = 1
+class DNSProtocal1(asyncio.DatagramProtocol):
 
-count = 0
-
-class DNSProtocol(asyncio.DatagramProtocol):
-
-    num = 1
-    sending = set()
-    receiving = set()
-    conn_lost = set()
-    used_port = {}
-
-    def __init__(self, hostname, callback):
-        self.hostname = hostname
+    def __init__(self, handle_data):
+        self.handle_data = handle_data
         self.transport = None
-        self.callback = callback
-        self.num = DNSProtocol.num
-        self.loop = asyncio.get_event_loop()
-        DNSProtocol.num += 1
+
+    def error_received(self, exc):
+        pass
+
+    def connection_lost(self, exc):
+        self.transport.close()
 
     def connection_made(self, transport):
         self.transport = transport
-        self.port = transport._sock.getsockname()[1]
-        self.fileno = self.transport._sock.fileno()
-
-        req = build_request(self.hostname, QTYPE_A)
-        self.transport.sendto(req)
-        DNSProtocol.sending.add(self)
-        if DNSProtocol.used_port.get(self.port):
-            DNSProtocol.used_port[self.port].append(self)
-        else:
-            DNSProtocol.used_port[self.port] = [self, ]
-        print("connection made, {}".format(self))
 
     def datagram_received(self, data, addr):
-        DNSProtocol.receiving.add(self)
+        self.handle_data(data)
+
+
+class DNSClient:
+
+    def __init__(self):
+        self.dns_request = loop.create_datagram_endpoint(
+            lambda: DNSProtocal1(self.handle_response),
+            remote_addr=('127.0.1.1', 53),
+            reuse_port=True
+        )
+        self.query_dict = {}
+
+    async def setup(self):
+        transport, protocal = await self.dns_request
+        self.transport = transport
+        self.protocal = protocal
+
+    async def query(self, hostname):
+        query_content = build_request(hostname, QTYPE_A)
+        future = asyncio.Future()
+        if hostname in self.query_dict:
+            futures = self.query_dict[hostname]
+            futures.add(future)
+            self.query_dict[hostname] = futures
+        else:
+            self.query_dict[hostname] = {future}
+            self.transport.sendto(query_content)
+        res = await future
+        return res
+
+    def handle_response(self, data):
         response = parse_response(data)
-        port = self.transport._sock.getsockname()[1]
-        if not DNSProtocol.used_port.get(port, None):
-            print("no dnsprotocal found")
-        if len(DNSProtocol.used_port[port]) == 1:
-            try:
-                DNSProtocol.used_port[port].remove(self)
-            except Exception:
-                pass
-            print("{}, close port {}".format(self, self.transport._sock.getsockname()[1]))
-        elif len(DNSProtocol.used_port[port]) >= 1:
-            for x in DNSProtocol.used_port[port]:
-                print("{} with sock fileno {}".format(x, x.transport._sock.fileno()))
-            try:
-                DNSProtocol.used_port[port].remove(self)
-            except Exception:
-                pass
-        else:
-            print('error, no port used,...port: {}'.format(port))
-        # don
-        # self.timer.cancel()
-        print("receive data, {} close ".format(self))
-        self.transport.close()
-        self.callback((response, self))
-
-    def error_received(self, exc):
-        print('Error received:', exc)
-
-    def connection_lost(self, exc):
-        print("connection lost, {} close".format(self))
-        self.transport.close()
-
-    def __repr__(self):
-        return "<DNSProtocal: {}, f: {}, p: {}>".format(self.num, self.fileno, self.port)
+        hostname = response.hostname
+        if hostname in self.query_dict:
+            futures = self.query_dict[hostname]
+            for future in futures:
+                if future.cancelled():
+                    continue
+                # TODO: handle exception
+                else:
+                    future.set_result(response.answers)
+            self.query_dict.pop(hostname)
 
 
-loop = asyncio.get_event_loop()
-
-
-async def get_hostinfo(hostname):
-    future = asyncio.Future()
-
-    def callback(result):
-        if future.cancelled():
-            return
-        else:
-            print("set result for future, {}".format(result[1]))
-            future.set_result(result)
-
-
-    dns_request = loop.create_datagram_endpoint(
-        lambda: DNSProtocol(hostname, callback),
-        remote_addr=('127.0.1.1', 53),
-        reuse_port=True
-    )
-
-    transport, protocal = await dns_request
-    response, num = await future
-    # if (response == "error"):
-    #     print(response, num)
-    if len(DNSProtocol.sending.difference(DNSProtocol.receiving)) < 40:
-        print("sending num: {}".format(len(DNSProtocol.sending)))
-        remaining = DNSProtocol.sending.difference(DNSProtocol.receiving)
-        print("remaining num: {}, doing {}".format(len(remaining), remaining))
-    # print("get response from {}".format(protocal))
-    return response
-
-async def test_aiodns():
-    resolver = aiodns.DNSResolver(loop=loop)
-    res = await resolver.query("www.163.com", "A")
+async def test_dns(dns_client):
+    res = await dns_client.query(b"www.baidu.com")
+    print(res)
     return res
 
-tasks1 = [test_aiodns() for i in range(1000)]
-
 if __name__ == '__main__':
-    # test()
-    # begin = time.time()
-    # loop.run_until_complete(asyncio.wait(tasks))
-    # print("last for {}".format(time.time() - begin))
-    #
-    # begin = time.time()
-    # loop.run_until_complete(asyncio.wait(tasks1))
-    # print("last for {}".format(time.time() - begin))
-    # dns_connect = loop.create_datagram_endpoint(
-    #     lambda: DNSProtocol('abc', loop),
-    #     remote_addr=('127.0.1.1', 53)
-    # )
-    tasks3 = [get_hostinfo(b"www.baidu.com") for i in range(200)]
+    loop = asyncio.get_event_loop()
+    dns_client = DNSClient()
+    loop.run_until_complete(dns_client.setup())
+    tasks2 = [test_dns(dns_client) for i in range(100)]
+
     begin = time.time()
-    loop.run_until_complete(asyncio.wait(tasks3))
-    # loop.run_forever()
+    loop.run_until_complete(asyncio.wait(tasks2))
     print("last for {}".format(time.time() - begin))
